@@ -1,46 +1,52 @@
-// Tiny synthesized sounds for Pasar Malam — no audio files, no network.
-// Everything is a WebAudio oscillator, created only after the player has
-// interacted with the page (browsers block audio before a gesture).
-export function makeSounds() {
-  let ctx = null;
-  let muted = false;
-  function audio() {
-    if (!ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      ctx = new AC();
+// audio.js — suara sintetis WebAudio, tanpa file. Semua nada dibuat di kode.
+let ctx = null;
+
+function ac() {
+  if (!ctx) {
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch {
+      return null;
     }
-    if (ctx.state === 'suspended') ctx.resume();
-    return ctx;
   }
-  function tone(freq, start, dur, type, vol) {
-    if (muted) return;
-    const ac = audio();
-    if (!ac) return;
-    const o = ac.createOscillator();
-    const g = ac.createGain();
-    o.type = type;
+  if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+  return ctx;
+}
+
+function tone(freq, dur, type, vol, when) {
+  const a = ac();
+  if (!a) return;
+  try {
+    const o = a.createOscillator();
+    const g = a.createGain();
+    o.type = type || 'sine';
     o.frequency.value = freq;
-    g.gain.setValueAtTime(vol, ac.currentTime + start);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + start + dur);
+    g.gain.setValueAtTime(vol || 0.12, a.currentTime + (when || 0));
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + (when || 0) + dur);
     o.connect(g);
-    g.connect(ac.destination);
-    o.start(ac.currentTime + start);
-    o.stop(ac.currentTime + start + dur + 0.02);
+    g.connect(a.destination);
+    o.start(a.currentTime + (when || 0));
+    o.stop(a.currentTime + (when || 0) + dur + 0.02);
+  } catch {
+    // audio gagal diam-diam: game tetap jalan
   }
-  return {
-    get muted() { return muted; },
-    toggleMute() { muted = !muted; return muted; },
-    unlock() { audio(); },
-    found() { tone(880, 0, 0.16, 'sine', 0.22); tone(1318, 0.09, 0.22, 'sine', 0.18); },
-    wrong() { tone(180, 0, 0.22, 'sawtooth', 0.12); },
-    hint() { tone(660, 0, 0.12, 'triangle', 0.16); },
-    click() { tone(520, 0, 0.06, 'triangle', 0.1); },
-    win() {
-      [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.12, 0.28, 'sine', 0.2));
-    },
-    sceneClear() {
-      [784, 988, 1175].forEach((f, i) => tone(f, i * 0.1, 0.24, 'sine', 0.18));
-    },
-  };
+}
+
+/** Mainkan suara berdasarkan jenisnya: 'found' | 'wrong' | 'hint' | 'win' | 'lose'. */
+export function sfx(kind, muted) {
+  if (muted) return;
+  if (kind === 'found') {
+    tone(660, 0.12, 'sine', 0.14, 0);
+    tone(880, 0.18, 'sine', 0.14, 0.09);
+  } else if (kind === 'wrong') {
+    tone(160, 0.22, 'sawtooth', 0.07, 0);
+  } else if (kind === 'hint') {
+    tone(520, 0.14, 'triangle', 0.12, 0);
+    tone(780, 0.16, 'triangle', 0.12, 0.08);
+  } else if (kind === 'win') {
+    [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.22, 'sine', 0.13, i * 0.11));
+  } else if (kind === 'lose') {
+    tone(392, 0.2, 'sine', 0.1, 0);
+    tone(311, 0.3, 'sine', 0.1, 0.15);
+  }
 }

@@ -1,436 +1,399 @@
-// Pasar Malam — Cari Bedanya! Game logic: mouse + keyboard play, hints,
-// magnifier, timer, score, streaks, per-scene progress and deterministic
-// screenshot presets (?shot=start|play|play2|end). No network, no files.
-import { SCENES, SCENE_W, SCENE_H, renderScene } from './scenes.js';
-import { makeSounds } from './audio.js';
+// main.js — logika game "Pasar Malam — Cari Bedanya!".
+// Klik di gambar mana pun, keyboard (panah+Enter, Tab, H, 1-5, R, M, P), kaca pembesar 2x,
+// timer 2:30, skor + kombo, strike -5 detik, 3 petunjuk/scene, overlay menang.
+// Mode screenshot deterministik via ?shot=start|play|play2|end.
+import { SCENES, W, H } from './scenes.js';
+import { sfx } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
-const sounds = makeSounds();
+const cvL = $('cvL');
+const cvR = $('cvR');
+const ctxL = cvL.getContext('2d');
+const ctxR = cvR.getContext('2d');
+const lens = $('lens');
+const lensCv = $('lensCv');
+const lensCtx = lensCv.getContext('2d');
 
-const TIME_PER_SCENE = 150; // 2:30
-const CLICK_TOLERANCE = 10; // extra px around a difference when clicking
-
+const TIME_LIMIT = 150; // 2:30 per scene
 const state = {
   scene: 0,
-  activePanel: 'right',
+  found: new Set(),
+  score: 0,
+  streak: 0,
+  strikes: 0,
+  timeLeft: TIME_LIMIT,
+  hints: 3,
   paused: false,
-  shot: null,
-  totalScore: 0,
-  scenes: SCENES.map(() => ({
-    found: new Set(),
-    timeLeft: TIME_PER_SCENE,
-    hints: 3,
-    strikes: 0,
-    streak: 0,
-  })),
-  cross: { x: SCENE_W / 2, y: SCENE_H / 2, visible: false },
-  pulse: null, // {x, y, until} for the hint pulse
+  muted: false,
+  over: false,
+  wonScene: false,
+  active: 'right',
+  cross: { x: W / 2, y: H / 2 },
+  flash: null, // {x, y, side, until}
+  wonAll: new Set(),
 };
 
-let timerId = null;
-
-const els = {
-  remain: $('remainBig'),
-  dots: $('foundDots'),
-  timer: $('timer'),
-  score: $('score'),
-  streak: $('streak'),
-  strikes: $('strikes'),
-  hintCount: $('hintCount'),
-  hintBtn: $('hintBtn'),
-  pauseBtn: $('pauseBtn'),
-  restartBtn: $('restartBtn'),
-  soundBtn: $('soundBtn'),
-  progress: $('progressBar'),
-  sceneSub: $('sceneSub'),
-  tabs: $('sceneTabs'),
-  foundList: $('foundList'),
-  overlay: $('overlay'),
-  overlayEmoji: $('overlayEmoji'),
-  overlayTitle: $('overlayTitle'),
-  overlayText: $('overlayText'),
-  overlayBtn: $('overlayBtn'),
-  left: $('canvasLeft'),
-  right: $('canvasRight'),
-  lensLeft: $('lensLeft'),
-  lensRight: $('lensRight'),
-  crossLeft: $('crossLeft'),
-  crossRight: $('crossRight'),
-  boardLeft: $('boardLeft'),
-  boardRight: $('boardRight'),
+const SHOTS = {
+  start: { scene: 0, found: 3, score: 300, combo: 2, time: 118 },
+  play: { scene: 1, found: 4, score: 450, combo: 2, time: 107 },
+  play2: { scene: 2, found: 5, score: 650, combo: 3, time: 72 },
+  end: { scene: 0, found: 8, score: 980, combo: 7, time: 58 },
 };
 
-const cur = () => state.scenes[state.scene];
-const scene = () => SCENES[state.scene];
-const allApplied = () => new Set(scene().diffs.map((_, i) => i));
-
-// ---------- rendering ----------
-function drawMarker(c, x, y, r) {
-  // Bold double ring + green check badge: readable at a glance in a screenshot.
-  c.save();
-  c.lineWidth = 6;
-  c.strokeStyle = '#ffd166';
-  c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.stroke();
-  c.lineWidth = 2;
-  c.strokeStyle = '#ffffff';
-  c.beginPath(); c.arc(x, y, r - 7, 0, Math.PI * 2); c.stroke();
-  c.fillStyle = '#2fd48a';
-  c.beginPath(); c.arc(x + r * 0.62, y - r * 0.62, 11, 0, Math.PI * 2); c.fill();
-  c.strokeStyle = '#06281a'; c.lineWidth = 3; c.lineCap = 'round'; c.lineJoin = 'round';
-  c.beginPath();
-  c.moveTo(x + r * 0.62 - 5, y - r * 0.62);
-  c.lineTo(x + r * 0.62 - 1, y - r * 0.62 + 4);
-  c.lineTo(x + r * 0.62 + 6, y - r * 0.62 - 4);
-  c.stroke();
-  c.restore();
+function scene() {
+  return SCENES[state.scene];
+}
+function remaining() {
+  return scene().diffs.length - state.found.size;
+}
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
 }
 
-function drawPulse(c, x, y, r, t) {
-  const p = (Date.now() - t) / 1200;
-  if (p >= 1) return false;
-  const rr = r + p * 22;
-  c.save();
-  c.globalAlpha = 1 - p;
-  c.lineWidth = 5;
-  c.strokeStyle = '#ffd166';
-  c.beginPath(); c.arc(x, y, rr, 0, Math.PI * 2); c.stroke();
-  c.restore();
-  return true;
+function drawMarker(ctx, x, y, r) {
+  // lingkaran emas tebal + ring putih + centang hijau
+  ctx.save();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = '#f5b942';
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = '#2fbf5a';
+  ctx.beginPath();
+  ctx.arc(x + r * 0.62, y - r * 0.62, 13, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x + r * 0.62 - 6, y - r * 0.62);
+  ctx.lineTo(x + r * 0.62 - 1, y - r * 0.62 + 5);
+  ctx.lineTo(x + r * 0.62 + 7, y - r * 0.62 - 6);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function render() {
-  const s = scene();
-  renderScene(els.left, s, new Set());
-  renderScene(els.right, s, allApplied());
-  for (const [canvas, isRight] of [[els.left, false], [els.right, true]]) {
-    const c = canvas.getContext('2d');
-    for (const i of cur().found) {
-      const d = s.diffs[i];
-      drawMarker(c, d.x, d.y, d.r);
-    }
-    if (state.pulse) {
-      const d = s.diffs[state.pulse.index];
-      if (!drawPulse(c, d.x, d.y, d.r, state.pulse.started)) state.pulse = null;
-    }
-    void isRight;
+  const sc = scene();
+  sc.draw(ctxL, false);
+  sc.draw(ctxR, true);
+  // marker untuk yang sudah ketemu, di KEDUA panel
+  sc.diffs.forEach((d, i) => {
+    if (!state.found.has(i)) return;
+    drawMarker(ctxL, d.x, d.y, d.r);
+    drawMarker(ctxR, d.x, d.y, d.r);
+  });
+  // flash X merah untuk klik salah
+  if (state.flash && Date.now() < state.flash.until) {
+    const ctx = state.flash.side === 'left' ? ctxL : ctxR;
+    const { x, y } = state.flash;
+    ctx.save();
+    ctx.strokeStyle = '#ff4d4d';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x - 14, y - 14);
+    ctx.lineTo(x + 14, y + 14);
+    ctx.moveTo(x + 14, y - 14);
+    ctx.lineTo(x - 14, y + 14);
+    ctx.stroke();
+    ctx.restore();
   }
-  if (state.pulse) requestAnimationFrame(render);
+  // crosshair di panel aktif (disembunyikan di mode screenshot supaya frame bersih)
+  if (!state.shot) {
+    const ctxA = state.active === 'left' ? ctxL : ctxR;
+    ctxA.save();
+    ctxA.strokeStyle = '#ffffff';
+    ctxA.lineWidth = 2;
+    ctxA.beginPath();
+    ctxA.arc(state.cross.x, state.cross.y, 14, 0, Math.PI * 2);
+    ctxA.stroke();
+    ctxA.fillStyle = '#f5b942';
+    ctxA.beginPath();
+    ctxA.arc(state.cross.x, state.cross.y, 4, 0, Math.PI * 2);
+    ctxA.fill();
+    ctxA.restore();
+  }
   updateHud();
-  updateCrosshair();
-}
-
-function fmtTime(sec) {
-  const m = Math.floor(sec / 60);
-  const s = Math.max(0, sec % 60);
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function updateHud() {
-  const s = scene();
-  const st = cur();
-  const remain = s.diffs.length - st.found.size;
-  els.remain.textContent = remain === 0 ? 'Semua ketemu! 🎉' : `${remain} lagi dicari`;
-  els.dots.innerHTML = s.diffs.map((_, i) =>
-    `<span class="dot${st.found.has(i) ? ' hit' : ''}">${st.found.has(i) ? '✓' : ''}</span>`).join('');
-  els.timer.textContent = fmtTime(st.timeLeft);
-  els.timer.classList.toggle('low', st.timeLeft <= 30);
-  els.score.textContent = state.totalScore;
-  els.streak.textContent = `×${st.streak}`;
-  els.strikes.textContent = st.strikes;
-  els.hintCount.textContent = st.hints;
-  els.hintBtn.disabled = st.hints <= 0 || remain === 0;
-  els.progress.style.width = `${(st.found.size / s.diffs.length) * 100}%`;
-  els.sceneSub.textContent = `${s.name} · ${s.sub}`;
-  els.foundList.innerHTML = st.found.size === 0
-    ? 'Belum ada — klik perbedaan pertama!'
-    : [...st.found].map((i) => `<span class="found-name">${s.diffs[i].name}</span>`).join(' &middot; ');
-  els.tabs.querySelectorAll('button').forEach((b, i) => {
-    b.classList.toggle('active', i === state.scene);
-    b.classList.toggle('done', state.scenes[i].found.size === SCENES[i].diffs.length);
+  const sc = scene();
+  $('sceneSub').textContent = sc.name + ' · Scene ' + (state.scene + 1) + ' dari ' + SCENES.length + ' · ' + sc.sub;
+  $('remainBig').textContent = remaining() + ' lagi dicari';
+  const dots = $('dots');
+  dots.innerHTML = '';
+  sc.diffs.forEach((d, i) => {
+    const s = document.createElement('span');
+    s.className = 'dot' + (state.found.has(i) ? ' on' : '');
+    dots.appendChild(s);
   });
-  els.boardLeft.classList.toggle('active', state.activePanel === 'left');
-  els.boardRight.classList.toggle('active', state.activePanel === 'right');
+  $('timer').textContent = fmtTime(Math.max(0, state.timeLeft));
+  $('score').textContent = String(state.score);
+  $('combo').textContent = '×' + Math.max(0, state.streak);
+  $('strikes').textContent = String(state.strikes);
+  $('hintBtn').textContent = '💡 Petunjuk (' + state.hints + ')';
+  $('hintBtn').disabled = state.hints <= 0 || state.over || state.wonScene;
+  const names = [...state.found].sort((a, b) => a - b).map((i) => sc.diffs[i].name);
+  $('foundList').innerHTML =
+    names.length === 0
+      ? 'Belum ada — klik perbedaan pertama!'
+      : names.map((n) => '✓ ' + n).join(' · ');
+  // tab scene
+  const tabs = $('tabs');
+  tabs.innerHTML = '';
+  SCENES.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'tab' + (i === state.scene ? ' active' : '') + (state.wonAll.has(i) ? ' done' : '');
+    b.textContent = (i + 1) + '. ' + s.name + (state.wonAll.has(i) ? ' ✓' : '');
+    b.addEventListener('click', () => switchScene(i));
+    tabs.appendChild(b);
+  });
 }
 
-function updateCrosshair() {
-  const { x, y, visible } = state.cross;
-  for (const [el, panel] of [[els.crossLeft, 'left'], [els.crossRight, 'right']]) {
-    el.hidden = !visible || state.activePanel !== panel;
-    el.style.left = `${(x / SCENE_W) * 100}%`;
-    el.style.top = `${(y / SCENE_H) * 100}%`;
-  }
-}
-
-// ---------- gameplay ----------
-function toSceneCoords(canvas, ev) {
-  const r = canvas.getBoundingClientRect();
+function toCanvas(ev, cv) {
+  const rect = cv.getBoundingClientRect();
   return {
-    x: ((ev.clientX - r.left) / r.width) * SCENE_W,
-    y: ((ev.clientY - r.top) / r.height) * SCENE_H,
+    x: ((ev.clientX - rect.left) / rect.width) * W,
+    y: ((ev.clientY - rect.top) / rect.height) * H,
   };
 }
 
-function hitDiff(x, y) {
-  const s = scene();
-  let best = -1;
-  let bestDist = Infinity;
-  s.diffs.forEach((d, i) => {
-    if (cur().found.has(i)) return;
-    const dist = Math.hypot(x - d.x, y - d.y);
-    if (dist <= d.r + CLICK_TOLERANCE && dist < bestDist) { best = i; bestDist = dist; }
-  });
-  return best;
-}
-
-function guess(x, y) {
-  if (state.paused || overlayOpen()) return;
-  sounds.unlock();
-  state.cross = { x, y, visible: true };
-  const i = hitDiff(x, y);
-  if (i >= 0) {
-    cur().found.add(i);
-    cur().streak += 1;
-    const gained = 100 + (cur().streak - 1) * 25;
-    state.totalScore += gained;
-    sounds.found();
-    render();
-    if (cur().found.size === scene().diffs.length) {
-      sounds.sceneClear();
-      stopTimer();
-      setTimeout(() => showSceneClear(), 450);
-    }
+function clickAt(x, y, side) {
+  if (state.paused || state.over || state.wonScene) return;
+  const sc = scene();
+  state.cross = { x, y };
+  state.active = side;
+  const hit = sc.diffs.findIndex((d, i) => !state.found.has(i) && Math.hypot(d.x - x, d.y - y) <= d.r);
+  if (hit >= 0) {
+    state.found.add(hit);
+    state.streak += 1;
+    state.score += 100 + 25 * (state.streak - 1);
+    sfx('found', state.muted);
+    if (remaining() === 0) winScene();
   } else {
-    cur().strikes += 1;
-    cur().streak = 0;
-    cur().timeLeft = Math.max(0, cur().timeLeft - 5);
-    sounds.wrong();
-    flashMiss(x, y);
-    render();
-    if (cur().timeLeft <= 0) {
-      stopTimer();
-      showOverlay('⏰', 'Waktu habis!', `Kamu menemukan ${cur().found.size} dari 7 perbedaan di ${scene().name}. Coba lagi — perbedaan yang sama menunggu.`, 'Coba lagi', () => { resetScene(); hideOverlay(); startTimer(); });
-    }
+    state.strikes += 1;
+    state.streak = 0;
+    state.timeLeft = Math.max(0, state.timeLeft - 5);
+    state.flash = { x, y, side, until: Date.now() + 600 };
+    sfx('wrong', state.muted);
+    setTimeout(render, 650);
   }
-}
-
-function flashMiss(x, y) {
-  for (const canvas of [els.left, els.right]) {
-    const c = canvas.getContext('2d');
-    c.save();
-    c.lineWidth = 5; c.strokeStyle = '#ff5347';
-    c.beginPath(); c.arc(x, y, 22, 0, Math.PI * 2); c.stroke();
-    c.beginPath();
-    c.moveTo(x - 10, y - 10); c.lineTo(x + 10, y + 10);
-    c.moveTo(x + 10, y - 10); c.lineTo(x - 10, y + 10);
-    c.stroke();
-    c.restore();
-  }
-  setTimeout(render, 450);
+  render();
 }
 
 function useHint() {
-  const st = cur();
-  if (state.paused || overlayOpen() || st.hints <= 0) return;
-  const remaining = scene().diffs.map((_, i) => i).filter((i) => !st.found.has(i));
-  if (remaining.length === 0) return;
-  st.hints -= 1;
-  state.pulse = { index: remaining[0], started: Date.now() };
-  sounds.hint();
-  render();
-  setTimeout(render, 1300);
-}
-
-function resetScene() {
-  const st = cur();
-  st.found = new Set();
-  st.timeLeft = TIME_PER_SCENE;
-  st.hints = 3;
-  st.strikes = 0;
-  st.streak = 0;
-  state.pulse = null;
+  if (state.paused || state.over || state.wonScene || state.hints <= 0) return;
+  const sc = scene();
+  const rest = sc.diffs.map((d, i) => i).filter((i) => !state.found.has(i));
+  if (rest.length === 0) return;
+  const pick = rest[Math.floor(Math.random() * rest.length)];
+  state.found.add(pick);
+  state.hints -= 1;
+  state.streak = 0;
+  state.score += 50;
+  sfx('hint', state.muted);
+  if (remaining() === 0) winScene();
   render();
 }
 
 function switchScene(i) {
-  if (i === state.scene) return;
   state.scene = i;
-  state.pulse = null;
-  state.paused = false;
-  els.pauseBtn.textContent = '⏸ Jeda';
+  state.found = new Set();
+  state.streak = 0;
+  state.timeLeft = TIME_LIMIT;
+  state.hints = 3;
+  state.wonScene = false;
+  state.over = false;
+  state.cross = { x: W / 2, y: H / 2 };
   hideOverlay();
-  sounds.click();
   render();
-  startTimer();
 }
 
-// ---------- timer ----------
-function startTimer() {
-  stopTimer();
-  if (state.shot) return; // screenshot presets freeze the clock
-  timerId = setInterval(() => {
-    if (state.paused || overlayOpen()) return;
-    cur().timeLeft -= 1;
-    if (cur().timeLeft <= 0) {
-      cur().timeLeft = 0;
-      stopTimer();
-      showOverlay('⏰', 'Waktu habis!', `Kamu menemukan ${cur().found.size} dari 7 perbedaan di ${scene().name}. Coba lagi — perbedaan yang sama menunggu.`, 'Coba lagi', () => { resetScene(); hideOverlay(); startTimer(); });
-    }
-    updateHud();
-  }, 1000);
-}
-function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
-
-// ---------- overlay ----------
-let overlayAction = null;
-function overlayOpen() { return !els.overlay.hidden; }
-function showOverlay(emoji, title, text, btn, action) {
-  els.overlayEmoji.textContent = emoji;
-  els.overlayTitle.textContent = title;
-  els.overlayText.textContent = text;
-  els.overlayBtn.textContent = btn;
-  overlayAction = action;
-  els.overlay.hidden = false;
-}
-function hideOverlay() { els.overlay.hidden = true; overlayAction = null; }
-function showSceneClear() {
-  const done = state.scenes.filter((st, i) => st.found.size === SCENES[i].diffs.length).length;
-  if (done === SCENES.length) {
-    sounds.win();
-    showOverlay('🏆', 'Semua scene selesai!', `Luar biasa — kamu menemukan seluruh 28 perbedaan di 4 scene. Skor akhir: ${state.totalScore}. Main lagi dari awal?`, 'Main lagi dari awal', () => {
-      state.totalScore = 0;
-      state.scenes = SCENES.map(() => ({ found: new Set(), timeLeft: TIME_PER_SCENE, hints: 3, strikes: 0, streak: 0 }));
-      state.scene = 0;
-      hideOverlay(); render(); startTimer();
-    });
-  } else {
-    const next = (state.scene + 1) % SCENES.length;
-    const nextName = SCENES[next].name;
-    showOverlay('🎉', `${scene().name} selesai!`, `Semua 7 perbedaan ketemu. Skor: ${state.totalScore}. Scene berikut: ${nextName}.`, `Lanjut: ${nextName} →`, () => { switchScene(next); });
-  }
+function winScene() {
+  state.wonScene = true;
+  state.wonAll.add(state.scene);
+  sfx('win', state.muted);
+  const sc = scene();
+  const next = (state.scene + 1) % SCENES.length;
+  const allDone = state.wonAll.size === SCENES.length;
+  showOverlay(
+    '🎉',
+    sc.name + ' selesai!',
+    'Semua 8 perbedaan ketemu. Skor: ' + state.score + '. ' + (allDone ? 'Semua 5 scene selesai — kamu master cari beda!' : 'Scene berikut: ' + SCENES[next].name + '.'),
+    allDone ? 'Main lagi dari awal ↻' : 'Lanjut: ' + SCENES[next].name + ' →',
+    () => {
+      if (allDone) switchScene(0);
+      else switchScene(next);
+    },
+  );
+  render();
 }
 
-// ---------- magnifier ----------
-function setupLens(canvas, lens) {
-  const wrap = canvas.parentElement;
-  canvas.addEventListener('mousemove', (ev) => {
-    if (state.paused) { lens.style.display = 'none'; return; }
-    const p = toSceneCoords(canvas, ev);
-    const lc = lens.getContext('2d');
-    lc.clearRect(0, 0, 180, 180);
-    lc.drawImage(canvas, p.x - 45, p.y - 45, 90, 90, 0, 0, 180, 180);
-    lc.strokeStyle = '#ffd166'; lc.lineWidth = 3;
-    lc.beginPath(); lc.arc(90, 90, 14, 0, Math.PI * 2); lc.stroke();
-    const wr = wrap.getBoundingClientRect();
-    const lx = Math.min(Math.max(ev.clientX - wr.left - 90, -20), wr.width - 160);
-    const ly = Math.min(Math.max(ev.clientY - wr.top - 90, -20), wr.height - 160);
-    lens.style.left = `${lx}px`;
-    lens.style.top = `${ly}px`;
-    lens.style.display = 'block';
-  });
-  canvas.addEventListener('mouseleave', () => { lens.style.display = 'none'; });
+function timeUp() {
+  state.over = true;
+  sfx('lose', state.muted);
+  showOverlay('⏰', 'Waktu habis!', 'Kamu menemukan ' + state.found.size + ' dari 8 perbedaan di ' + scene().name + '. Coba lagi!', 'Coba lagi ↻', () => switchScene(state.scene));
+  render();
 }
 
-// ---------- wiring ----------
-function buildTabs() {
-  SCENES.forEach((s, i) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = `${i + 1}. ${s.name}`;
-    b.addEventListener('click', () => switchScene(i));
-    els.tabs.appendChild(b);
-  });
+function showOverlay(emoji, title, body, btnLabel, onBtn) {
+  const ov = $('overlay');
+  $('ovEmoji').textContent = emoji;
+  $('ovTitle').textContent = title;
+  $('ovBody').textContent = body;
+  const btn = $('ovBtn');
+  btn.textContent = btnLabel;
+  btn.onclick = onBtn;
+  ov.classList.remove('hidden');
+}
+function hideOverlay() {
+  $('overlay').classList.add('hidden');
 }
 
-els.left.addEventListener('click', (ev) => { state.activePanel = 'left'; guess(...Object.values(toSceneCoords(els.left, ev))); });
-els.right.addEventListener('click', (ev) => { state.activePanel = 'right'; guess(...Object.values(toSceneCoords(els.right, ev))); });
-els.hintBtn.addEventListener('click', useHint);
-els.restartBtn.addEventListener('click', () => { resetScene(); startTimer(); });
-els.soundBtn.addEventListener('click', () => {
-  const m = sounds.toggleMute();
-  els.soundBtn.textContent = m ? '🔇 Senyap' : '🔊 Suara';
-});
-els.pauseBtn.addEventListener('click', () => {
-  if (overlayOpen()) return;
+function togglePause() {
+  if (state.over || state.wonScene) return;
   state.paused = !state.paused;
-  els.pauseBtn.textContent = state.paused ? '▶ Lanjut' : '⏸ Jeda';
+  $('pauseBtn').textContent = state.paused ? '▶ Lanjut' : '⏸ Jeda';
   if (state.paused) {
-    showOverlay('⏸', 'Dijeda', 'Istirahat sebentar — waktunya berhenti di sini.', 'Lanjut main', () => { state.paused = false; els.pauseBtn.textContent = '⏸ Jeda'; hideOverlay(); });
+    showOverlay('⏸', 'Jeda', 'Game dijeda. Tekan P atau tombol Lanjut untuk main lagi.', '▶ Lanjut', togglePause);
+  } else {
+    hideOverlay();
   }
-});
-els.overlayBtn.addEventListener('click', () => { if (overlayAction) overlayAction(); });
+  render();
+}
 
-window.addEventListener('keydown', (ev) => {
+// ---- magnifier 2x ----
+function showLens(ev, cv) {
+  const p = toCanvas(ev, cv);
+  const src = cv.getContext('2d');
+  const size = 90;
+  const sx = Math.max(0, Math.min(W - size, p.x - size / 2));
+  const sy = Math.max(0, Math.min(H - size, p.y - size / 2));
+  lensCtx.imageSmoothingEnabled = false;
+  lensCtx.clearRect(0, 0, 180, 180);
+  lensCtx.drawImage(cv, sx, sy, size, size, 0, 0, 180, 180);
+  lensCtx.strokeStyle = '#f5b942';
+  lensCtx.lineWidth = 4;
+  lensCtx.beginPath();
+  lensCtx.arc(90, 90, 86, 0, Math.PI * 2);
+  lensCtx.stroke();
+  lens.style.display = 'block';
+  const rect = cv.getBoundingClientRect();
+  const panels = cv.closest('.panels').getBoundingClientRect();
+  let lx = ev.clientX - panels.left + 24;
+  let ly = ev.clientY - panels.top - 190;
+  if (lx + 190 > panels.width) lx = ev.clientX - panels.left - 214;
+  if (ly < 0) ly = ev.clientY - panels.top + 24;
+  lens.style.left = lx + 'px';
+  lens.style.top = ly + 'px';
+}
+function hideLens() {
+  lens.style.display = 'none';
+}
+
+// ---- events ----
+for (const [cv, side] of [[cvL, 'left'], [cvR, 'right']]) {
+  cv.addEventListener('click', (ev) => {
+    const p = toCanvas(ev, cv);
+    clickAt(p.x, p.y, side);
+  });
+  cv.addEventListener('mousemove', (ev) => {
+    const p = toCanvas(ev, cv);
+    state.cross = { x: p.x, y: p.y };
+    state.active = side;
+    showLens(ev, cv);
+    render();
+  });
+  cv.addEventListener('mouseleave', hideLens);
+}
+$('hintBtn').addEventListener('click', useHint);
+$('pauseBtn').addEventListener('click', togglePause);
+
+document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Tab') {
     ev.preventDefault();
-    state.activePanel = state.activePanel === 'left' ? 'right' : 'left';
-    updateHud();
-    updateCrosshair();
+    state.active = state.active === 'left' ? 'right' : 'left';
+    render();
     return;
   }
-  if (overlayOpen()) {
-    if (ev.key === 'Enter' || ev.key === 'Escape') { ev.preventDefault(); if (overlayAction) overlayAction(); }
-    return;
-  }
-  const step = ev.shiftKey ? 40 : 12;
-  let moved = false;
-  if (ev.key === 'ArrowLeft') { state.cross.x = Math.max(0, state.cross.x - step); moved = true; }
-  if (ev.key === 'ArrowRight') { state.cross.x = Math.min(SCENE_W, state.cross.x + step); moved = true; }
-  if (ev.key === 'ArrowUp') { state.cross.y = Math.max(0, state.cross.y - step); moved = true; }
-  if (ev.key === 'ArrowDown') { state.cross.y = Math.min(SCENE_H, state.cross.y + step); moved = true; }
-  if (moved) {
+  const step = ev.shiftKey ? 40 : 14;
+  if (ev.key === 'ArrowLeft') {
+    state.cross.x = Math.max(0, state.cross.x - step);
+    render();
     ev.preventDefault();
-    state.cross.visible = true;
-    updateCrosshair();
-    return;
+  } else if (ev.key === 'ArrowRight') {
+    state.cross.x = Math.min(W, state.cross.x + step);
+    render();
+    ev.preventDefault();
+  } else if (ev.key === 'ArrowUp') {
+    state.cross.y = Math.max(0, state.cross.y - step);
+    render();
+    ev.preventDefault();
+  } else if (ev.key === 'ArrowDown') {
+    state.cross.y = Math.min(H, state.cross.y + step);
+    render();
+    ev.preventDefault();
+  } else if (ev.key === 'Enter') {
+    clickAt(state.cross.x, state.cross.y, state.active);
+    ev.preventDefault();
+  } else if (ev.key === 'h' || ev.key === 'H') {
+    useHint();
+  } else if (ev.key === 'p' || ev.key === 'P') {
+    togglePause();
+  } else if (ev.key === 'r' || ev.key === 'R') {
+    switchScene(state.scene);
+  } else if (ev.key === 'm' || ev.key === 'M') {
+    state.muted = !state.muted;
+  } else if (/^[1-5]$/.test(ev.key)) {
+    switchScene(Number(ev.key) - 1);
   }
-  if (ev.key === 'Enter') { ev.preventDefault(); guess(state.cross.x, state.cross.y); }
-  else if (ev.key === 'h' || ev.key === 'H') useHint();
-  else if (ev.key === 'r' || ev.key === 'R') { resetScene(); startTimer(); }
-  else if (ev.key === 'm' || ev.key === 'M') els.soundBtn.click();
-  else if (ev.key === 'p' || ev.key === 'P') els.pauseBtn.click();
-  else if (ev.key >= '1' && ev.key <= '4') switchScene(Number(ev.key) - 1);
 });
 
-setupLens(els.left, els.lensLeft);
-setupLens(els.right, els.lensRight);
-
-// ---------- deterministic screenshot presets ----------
-function applyShot() {
-  const q = new URLSearchParams(window.location.search);
-  const shot = q.get('shot');
-  if (!shot) return;
-  state.shot = shot;
-  if (shot === 'start') {
-    state.scene = 0;
-  } else if (shot === 'play') {
-    state.scene = 1;
-    cur().found = new Set([0, 1, 2]);
-    cur().streak = 2;
-    cur().timeLeft = 107;
-    state.totalScore = 350;
-  } else if (shot === 'play2') {
-    state.scene = 0;
-    cur().found = new Set([0, 1, 2, 3]);
-    cur().streak = 3;
-    cur().timeLeft = 72;
-    state.totalScore = 520;
-  } else if (shot === 'end') {
-    state.scene = 0;
-    cur().found = new Set([0, 1, 2, 3, 4, 5, 6]);
-    cur().streak = 7;
-    cur().timeLeft = 58;
-    state.totalScore = 980;
+// ---- timer ----
+setInterval(() => {
+  if (state.paused || state.over || state.wonScene) return;
+  if (state.shot) return; // mode screenshot: timer diam
+  state.timeLeft -= 1;
+  if (state.timeLeft <= 0) {
+    state.timeLeft = 0;
+    timeUp();
   }
-  render();
+  updateHud();
+}, 1000);
+
+// ---- mode screenshot deterministik ----
+const params = new URLSearchParams(location.search);
+const shot = params.get('shot');
+if (shot && SHOTS[shot]) {
+  const s = SHOTS[shot];
+  state.shot = shot;
+  state.scene = s.scene;
+  state.found = new Set(Array.from({ length: s.found }, (_, i) => i));
+  state.score = s.score;
+  state.streak = s.combo;
+  state.timeLeft = s.time;
+  state.hints = 3;
   if (shot === 'end') {
-    showOverlay('🎉', 'Pasar Malam selesai!', 'Semua 7 perbedaan ketemu. Skor: 980. Scene berikut: Pelabuhan Fajar.', 'Lanjut: Pelabuhan Fajar →', () => {});
-    // End screenshot keeps the win card but must not advance on its own.
-    overlayAction = null;
+    state.wonScene = true;
+    state.wonAll.add(0);
+    const sc = scene();
+    showOverlay(
+      '🎉',
+      sc.name + ' selesai!',
+      'Semua 8 perbedaan ketemu. Skor: ' + state.score + '. Scene berikut: ' + SCENES[1].name + '.',
+      'Lanjut: ' + SCENES[1].name + ' →',
+      () => {},
+    );
   }
 }
 
-// ---------- boot ----------
-buildTabs();
-applyShot();
 render();
-startTimer();
