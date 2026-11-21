@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pasar Malam — Cari Bedanya!</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <div class="brand-mark">🏮</div>
+      <div>
+        <h1>Pasar Malam <span>— Cari Bedanya!</span></h1>
+        <p id="sceneSub">Scene 1 dari 4 &middot; Par 2:30 &middot; 4 scene &middot; 28 perbedaan adil</p>
+      </div>
+    </div>
+    <div id="counterBox" title="Berapa perbedaan yang masih dicari">
+      <div id="remainBig">7 lagi dicari</div>
+      <div id="foundDots" aria-label="Perbedaan yang sudah ketemu"></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="stat-label">Waktu</span><span id="timer" class="stat-value">02:30</span></div>
+      <div class="stat"><span class="stat-label">Skor</span><span id="score" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">Kombo</span><span id="streak" class="stat-value">×0</span></div>
+      <div class="stat"><span class="stat-label">Salah</span><span id="strikes" class="stat-value">0</span></div>
+    </div>
+    <div class="actions">
+      <button id="hintBtn" type="button">💡 Petunjuk (<span id="hintCount">3</span>)</button>
+      <button id="pauseBtn" type="button">⏸ Jeda</button>
+      <button id="restartBtn" type="button">↻ Ulang</button>
+      <button id="soundBtn" type="button">🔊 Suara</button>
+    </div>
+  </header>
+
+  <div id="progressWrap"><div id="progressBar"></div></div>
+
+  <nav id="sceneTabs" aria-label="Pilih scene"></nav>
+
+  <main id="boards">
+    <section class="board" id="boardLeft">
+      <div class="board-label"><span>KIRI — Gambar Asli</span><span class="board-key">Tab: gambar kiri</span></div>
+      <div class="canvas-wrap">
+        <canvas id="canvasLeft" width="640" height="400"></canvas>
+        <canvas id="lensLeft" class="lens" width="180" height="180"></canvas>
+        <div id="crossLeft" class="crosshair" hidden>+</div>
+      </div>
+      <div class="board-caption">Original</div>
+    </section>
+    <div id="vsBadge" aria-hidden="true">VS</div>
+    <section class="board" id="boardRight">
+      <div class="board-label"><span>KANAN — Cari Perubahannya</span><span class="board-key">Tab: gambar kanan</span></div>
+      <div class="canvas-wrap">
+        <canvas id="canvasRight" width="640" height="400"></canvas>
+        <canvas id="lensRight" class="lens" width="180" height="180"></canvas>
+        <div id="crossRight" class="crosshair" hidden>+</div>
+      </div>
+      <div class="board-caption">Changed — klik perbedaan di gambar mana pun</div>
+    </section>
+  </main>
+
+  <section id="foundBar">
+    <strong>Sudah ketemu:</strong>
+    <span id="foundList">Belum ada — klik perbedaan pertama!</span>
+  </section>
+
+  <section id="howto">
+    <h2>🧭 Cara main</h2>
+    <p>Dua gambar terlihat sama — tapi gambar kanan punya <strong>7 perubahan licik</strong>: ada yang dihapus, diwarnai ulang, dipindah, diperbesar, dibalik, atau ditambah. Klik perbedaan di <strong>gambar mana pun</strong> untuk melingkarinya. Klik salah mengurangi 5 detik. Temukan semuanya sebelum waktu habis. Empat scene makin padat dan makin licik: pasar malam, pelabuhan fajar, taman pagi, dan perpustakaan senja.</p>
+    <p class="keys">Mouse: klik untuk menebak &middot; hover = kaca pembesar &middot; Keys: <kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> gerakkan crosshair &middot; <kbd>Enter</kbd> tebak &middot; <kbd>Tab</kbd> ganti gambar &middot; <kbd>H</kbd> petunjuk &middot; <kbd>1</kbd>–<kbd>4</kbd> ganti scene &middot; <kbd>R</kbd> ulang scene &middot; <kbd>M</kbd> suara</p>
+  </section>
+
+  <div id="overlay" hidden>
+    <div id="overlayCard">
+      <div id="overlayEmoji">🎉</div>
+      <h2 id="overlayTitle">Scene selesai!</h2>
+      <p id="overlayText"></p>
+      <button id="overlayBtn" type="button">Lanjut ke scene berikut →</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
